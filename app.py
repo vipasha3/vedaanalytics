@@ -572,10 +572,11 @@ elif menu == "OPD System":
             if st.button("Call Next Patient"):
                 waiting = df_opd[df_opd["status"] == "Waiting"]
                 if not waiting.empty:
-                    id_ = waiting.iloc[0]["id"]
+                    id_ = int(waiting.iloc[0]["id"])
+                    name_called = waiting.iloc[0]["name"]
                     c.execute("UPDATE opd SET status='In Progress' WHERE id=?", (id_,))
                     conn.commit()
-                    st.success(f"Calling: {waiting.iloc[0]['name']}")
+                    st.success(f"Calling: {name_called} (Token: {waiting.iloc[0]['token']})")
                     st.rerun()
                 else:
                     st.info("No patients waiting.")
@@ -584,7 +585,7 @@ elif menu == "OPD System":
             if st.button("Mark Current as Done"):
                 in_progress = df_opd[df_opd["status"] == "In Progress"]
                 if not in_progress.empty:
-                    id_ = in_progress.iloc[0]["id"]
+                    id_ = int(in_progress.iloc[0]["id"])
                     c.execute("UPDATE opd SET status='Done' WHERE id=?", (id_,))
                     conn.commit()
                     st.success(f"{in_progress.iloc[0]['name']} marked as Done.")
@@ -594,10 +595,17 @@ elif menu == "OPD System":
 
         with col_c:
             if st.button("Clear Done Patients"):
-                c.execute("DELETE FROM opd WHERE status='Done'")
-                conn.commit()
-                st.success("Cleared all done patients from queue.")
-                st.rerun()
+                done = df_opd[df_opd["status"] == "Done"]
+                if not done.empty:
+                    c.execute("DELETE FROM opd WHERE status='Done'")
+                    conn.commit()
+                    st.success("Cleared all done patients from queue.")
+                    st.rerun()
+                else:
+                    st.info("No done patients to clear.")  
+                
+                
+
 
         waiting_count = len(df_opd[df_opd["status"] == "Waiting"])
         if waiting_count > 10:
