@@ -693,9 +693,27 @@ elif menu == "Dashboard":
 
     
         # Payment status breakdown
+
         st.subheader("Payment Status Breakdown")
-        pay_counts = df["Payment Status"].value_counts()
-        st.bar_chart(pay_counts)
+
+    
+
+        pay_counts = df["Payment Status"].value_counts().reset_index()
+        pay_counts.columns = ["Payment Status", "Count"]
+
+        fig = px.bar(
+            pay_counts,
+            x="Payment Status",
+            y="Count",
+            color="Payment Status",   # 🔥 adds different colors
+            title="Payment Status Breakdown"
+        )
+
+        fig.update_layout(template="plotly_dark")
+
+        st.plotly_chart(fig)
+
+        
 
         # Pending bills list
         pending = df[df["Payment Status"] == "Pending"][["Name", "Doctor", "Fees", "Phone"]]
@@ -787,19 +805,43 @@ elif menu == "Dashboard":
         with col_x:
             st.markdown("### Doctor-wise Revenue")
             doc_rev = df.groupby("Doctor")["Fees"].sum().sort_values(ascending=False)
-            st.bar_chart(doc_rev)
+
+            fig = px.bar(
+                doc_rev.reset_index(),
+                x="Doctor",
+                y="Fees",
+                color="Doctor",
+                title="Doctor-wise Revenue"
+            )
+
+            st.plotly_chart(fig)
 
         # Department-wise Patients
         with col_y:
             if "Department" in df.columns:
                 st.markdown("### Department-wise Patients")
                 dept_count = df["Department"].value_counts()
-                st.bar_chart(dept_count)
+                fig = px.bar(
+                    dept_count.reset_index(),
+                    x="Department",   # ✅ correct column
+                    y="count",        # ✅ correct column
+                    color="Department",
+                    title="Department-wise Patients"
+                )
+
+                st.plotly_chart(fig)
 
         # Daily Patient Trend (clean)
         st.markdown("### Daily Patient Trend (Improved)")
         daily_trend = df.groupby(df["Admission Date"].dt.date).size()
-        st.line_chart(daily_trend)
+        fig = px.line(
+            daily_trend.reset_index(),
+            x="Admission Date",
+            y=0,
+            title="Daily Patient Trend"
+        )
+
+        st.plotly_chart(fig)
 
         # Bed Occupancy (Simple Logic)
         st.markdown("### Bed Occupancy")
