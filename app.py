@@ -5,22 +5,67 @@ from datetime import date
 from fpdf import FPDF
 import numpy as np
 import hashlib
+import plotly.express as px
+import plotly.io as pio
+
+pio.templates["custom_dark"] = pio.templates["plotly_dark"]
+
+pio.templates["custom_dark"].layout.update({
+    "paper_bgcolor": "#0f172a",
+    "plot_bgcolor": "#0f172a",
+    "font": {"color": "#e2e8f0"},
+    "colorway": ["#38bdf8", "#22c55e", "#f59e0b", "#ef4444", "#a78bfa"]
+})
+
+pio.templates.default = "custom_dark"
 
 # -------------------------------
 # Page Config
 # -------------------------------
 st.set_page_config(page_title="Hospital System", layout="wide")
 
+st.markdown("""
+<style>
+
+/* Background */
+.main {
+    background: linear-gradient(to right, #eef2f3, #dfe9f3);
+}
+
+/* Headings */
+h1, h2, h3, h4 {
+    color: #1a237e;
+}
+
+/* Cards spacing */
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 1rem;
+}
+
+/* Plotly chart styling */
+.plotly-chart {
+    border-radius: 16px;
+}
+
+/* Better spacing */
+section.main > div {
+    padding-top: 1rem;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
 # -------------------------------
 # UI Styling
 # -------------------------------
 st.markdown("""
 <style>
-.main { background-color: #f5f7fa; }
-.stButton>button {
-    background-color: #0066cc;
-    color: white;
-    border-radius: 8px;
+.main {
+    background: linear-gradient(to right, #eef2f3, #dfe9f3);
+}
+h2, h3, h4 {
+    color: #1a237e;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -79,6 +124,10 @@ def add_column_if_missing(table, column, col_type):
     except Exception:
         pass  # Column already exists
 
+add_column_if_missing("users", "hospital_id", "TEXT")
+add_column_if_missing("patients", "hospital_id", "TEXT")
+add_column_if_missing("appointments", "hospital_id", "TEXT")
+add_column_if_missing("opd", "hospital_id", "TEXT")
 add_column_if_missing("patients", "phone", "TEXT DEFAULT ''")
 add_column_if_missing("patients", "payment_status", "TEXT DEFAULT 'Pending'")
 add_column_if_missing("patients", "status", "TEXT DEFAULT 'Admitted'")
@@ -99,7 +148,10 @@ def hash_password(password):
 def add_user(u, p):
     try:
         hashed = hash_password(p)
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (u, hashed))
+        hospital_id = u  # simple unique mapping
+
+        c.execute("INSERT INTO users (username, password, hospital_id) VALUES (?, ?, ?)", 
+                  (u, hashed, hospital_id))
         conn.commit()
         return True
     except Exception:
@@ -107,18 +159,22 @@ def add_user(u, p):
 
 def login_user(u, p):
     hashed = hash_password(p)
-    c.execute("SELECT * FROM users WHERE username=? AND password=?", (u, hashed))
-    return c.fetchone() is not None
-
+    c.execute("SELECT hospital_id FROM users WHERE username=? AND password=?", (u, hashed))
+    return c.fetchone()
+    
 def add_patient(n, a, d, doc, dt, f, phone, payment_status, status):
     c.execute("""INSERT INTO patients
-        (name, age, disease, doctor, admission_date, fees, phone, payment_status, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (n, a, d, doc, dt, f, phone, payment_status, status))
+        (hospital_id, name, age, disease, doctor, admission_date, fees, phone, payment_status, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (st.session_state.hospital_id, n, a, d, doc, dt, f, phone, payment_status, status))
     conn.commit()
 
 def view_patients():
-    df = pd.read_sql_query("SELECT * FROM patients", conn)
+    df = pd.read_sql_query(
+        "SELECT * FROM patients WHERE hospital_id=?",
+        conn,
+        params=(st.session_state.hospital_id,)
+    )
 
     # Proper column rename (UI friendly)
     df.rename(columns={
@@ -152,12 +208,16 @@ def update_payment(patient_id, payment_status):
     conn.commit()
 
 def add_appointment(n, doc, dt):
-    c.execute("INSERT INTO appointments (patient_name, doctor, date) VALUES (?, ?, ?)", (n, doc, dt))
+    c.execute("INSERT INTO appointments (hospital_id, patient_name, doctor, date) VALUES (?, ?, ?, ?)", 
+              (st.session_state.hospital_id, n, doc, dt))
     conn.commit()
 
 def view_appointments():
-    c.execute("SELECT * FROM appointments")
-    return pd.DataFrame(c.fetchall(), columns=["ID", "Patient", "Doctor", "Date"])
+    return pd.read_sql_query(
+        "SELECT * FROM appointments WHERE hospital_id=?",
+        conn,
+        params=(st.session_state.hospital_id,)
+    )
 
 # -------------------------------
 # PDF: Per-patient bill
@@ -218,10 +278,14 @@ if not st.session_state.logged_in:
         st.subheader("Login")
         u = st.text_input("Username")
         p = st.text_input("Password", type="password")
+
         if st.button("Login"):
-            if login_user(u, p):
+            res = login_user(u, p)   # get hospital_id
+
+            if res:
                 st.session_state.logged_in = True
                 st.session_state.username = u
+                st.session_state.hospital_id = res[0] 
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
@@ -284,16 +348,25 @@ if menu == "Add Patient":
 # -------------------------------
 # DASHBOARD
 # -------------------------------
+
 elif menu == "Dashboard":
+
+    st.title("📊 Hospital Analytics Dashboard")
+    st.caption("Real-time insights for better hospital decisions")
+
+
     st.subheader("Hospital Dashboard")
     df = view_patients()
+    full_df = df.copy() 
 
     if not df.empty:
         df["Admission Date"] = pd.to_datetime(df["Admission Date"], errors="coerce")
+        full_df["Admission Date"] = pd.to_datetime(full_df["Admission Date"], errors="coerce")  # ⭐ ADD THIS
 
         # Date filter
         st.markdown("#### Filter by Period")
         period = st.radio("Show data for:", ["All Time", "Today", "This Week", "This Month"], horizontal=True)
+
         today = pd.Timestamp(date.today())
 
         if period == "Today":
@@ -303,6 +376,25 @@ elif menu == "Dashboard":
         elif period == "This Month":
             df = df[df["Admission Date"].dt.month == today.month]
 
+        # ==============================
+        # 📈 GROWTH CALCULATION
+        # ==============================
+
+        prev_df = full_df.copy()
+
+        if period == "Today":
+            prev_df = prev_df[prev_df["Admission Date"].dt.date == (today - pd.Timedelta(days=1)).date()]
+
+        elif period == "This Week":
+            prev_df = prev_df[
+                (prev_df["Admission Date"] >= today - pd.Timedelta(days=14)) &
+                (prev_df["Admission Date"] < today - pd.Timedelta(days=7))
+            ]
+
+        elif period == "This Month":
+            prev_month = today.month - 1 if today.month > 1 else 12
+            prev_df = prev_df[prev_df["Admission Date"].dt.month == prev_month]
+            
         # Search
         search = st.text_input("Search Patient by Name")
         if search:
@@ -312,39 +404,294 @@ elif menu == "Dashboard":
             st.info("No data for selected period.")
             st.stop()
 
-        # KPIs
+       
+        # ==============================
+        # 📊 KPI CALCULATIONS (FINAL)
+        # ==============================
+
+        total_patients = len(df)
+
+        total_revenue = df[df["Payment Status"] == "Paid"]["Fees"].sum()
+
+        pending_count = df[df["Payment Status"] == "Pending"].shape[0]
+
+        admitted = df[df["Status"] == "Admitted"].shape[0]
+
+        # ==============================
+        # 🎨 KPI STYLING (PROFESSIONAL)
+        # ==============================
+        st.markdown("""
+        <style>
+        .kpi-card {
+            background: linear-gradient(135deg, #1e293b, #0f172a);
+            padding: 20px;
+            border-radius: 15px;
+            border: 1px solid #334155;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            transition: 0.3s;
+        }
+        .kpi-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+        }
+
+        .kpi-title {
+            color: #94a3b8;
+            font-size: 14px;
+        }
+
+        .kpi-value {
+            color: #38bdf8;
+            font-size: 34px;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+
+        .kpi-sub {
+            color: #64748b;
+            font-size: 12px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        
+        # ==============================
+        # 🧾 KPI DISPLAY
+        # ==============================
+
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Patients", len(df))
-        col2.metric("Total Revenue", f"Rs.{df['Fees'].sum():,}")
-        col3.metric("Pending Payments", len(df[df["Payment Status"] == "Pending"]))
-        col4.metric("Currently Admitted", len(df[df["Status"] == "Admitted"]))
 
-        st.markdown("---")
+        with col1:
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">👨‍⚕️ Total Patients</div>
+                <div class="kpi-value">{total_patients}</div>
+                <div class="kpi-sub">Hospital workload</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Charts
+        with col2:
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">💰 Total Revenue</div>
+                <div class="kpi-value">₹{total_revenue:,}</div>
+                <div class="kpi-sub">Total earnings</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col3:
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">⚠️ Pending Payments</div>
+                <div class="kpi-value">{pending_count}</div>
+                <div class="kpi-sub">Needs attention</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col4:
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">🛏️ Admitted Patients</div>
+                <div class="kpi-value">{admitted}</div>
+                <div class="kpi-sub">Current occupancy</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # 📥 EXPORT DATA
+        st.download_button(
+            "📥 Download Patient Data",
+            df.to_csv(index=False),
+            file_name="hospital_data.csv",
+            mime="text/csv"
+        )
+
+        # ==============================
+        # 📊 PREMIUM CHARTS (PLOTLY)
+        # ==============================
+
+        st.markdown("""
+        <style>
+        .plotly-chart {
+            border-radius: 12px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("### 💰 Doctor Revenue")
+            doc_rev = df.groupby("Doctor")["Fees"].sum().reset_index()
+            doc_rev = doc_rev.sort_values(by="Fees", ascending=False)
+
+            fig = px.bar(
+                doc_rev,
+                x="Doctor",
+                y="Fees",
+                color="Doctor",
+                title="Doctor Revenue Contribution",
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+
+            fig.update_layout(
+                xaxis_tickangle=-30,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.markdown("### 🏥 Department Patients")
+            dept = df["Department"].value_counts().reset_index()
+            dept.columns = ["Department", "Patients"]
+
+            fig2 = px.bar(
+                dept,
+                x="Department",
+                y="Patients",
+                color="Department",
+                title="Department Workload",
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+
+            fig2.update_layout(
+                xaxis_tickangle=-30,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+        if not dept.empty:
+            st.info(f"🏥 Highest load department: {dept.iloc[0]['Department']}")
+
+        if not df.empty:
+            top_doc = df.groupby("Doctor")["Fees"].sum().idxmax()
+            st.success(f"💰 Top revenue generating doctor: Dr. {top_doc}")    
+
         col_a, col_b = st.columns(2)
+
         with col_a:
-            st.subheader("Disease Analysis")
-            st.bar_chart(df["Disease"].value_counts())
+            st.subheader("🦠 Disease Analysis")
+            disease_counts = df["Disease"].value_counts().reset_index()
+            disease_counts.columns = ["Disease", "Count"]
+            disease_counts = disease_counts.sort_values(by="Count", ascending=False)
+
+            fig1 = px.bar(
+                disease_counts,
+                x="Disease",
+                y="Count",
+                color="Disease",
+                title="Disease Distribution",
+                color_discrete_sequence=px.colors.qualitative.Set2
+
+            )
+
+            fig1.update_layout(xaxis_tickangle=-30,
+                         plot_bgcolor="rgba(0,0,0,0)",
+                         paper_bgcolor="rgba(0,0,0,0)"
+            )
+
+            st.plotly_chart(fig1, use_container_width=True)
+
+            if not disease_counts.empty:
+                st.info(f"Most common disease: {disease_counts.iloc[0]['Disease']}")
 
         with col_b:
-            st.subheader("Doctor Performance")
-            doc_perf = df["Doctor"].value_counts()
-            st.bar_chart(doc_perf)
+            st.subheader("👨‍⚕️ Doctor Performance")
+            doc_perf = df["Doctor"].value_counts().reset_index()
+            doc_perf.columns = ["Doctor", "Patients"]
+            doc_perf = doc_perf.sort_values(by="Patients", ascending=False)
+
+            fig2 = px.bar(
+                doc_perf,
+                x="Doctor",
+                y="Patients",
+                color="Doctor",
+                title="Doctor Workload",
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+
+            fig2.update_layout(xaxis_tickangle=-30,
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)"
+            )
+
+            st.plotly_chart(fig2, use_container_width=True)
+
             if not doc_perf.empty:
-                st.write("Top Doctor:", doc_perf.idxmax())
+                st.success(f"Top Doctor: Dr. {doc_perf.iloc[0]['Doctor']}")
 
         col_c, col_d = st.columns(2)
+
         with col_c:
-            st.subheader("Daily Admission Trend")
-            daily = df["Admission Date"].value_counts().sort_index()
-            st.line_chart(daily)
+            st.subheader("📅 Daily Admission Trend")
+            daily = df["Admission Date"].value_counts().sort_index().reset_index()
+            daily.columns = ["Date", "Patients"]
+
+            fig3 = px.line(
+                daily,
+                x="Date",
+                y="Patients",
+                markers=True,
+                title="Daily Patient Flow"
+            )
+
+            fig3.update_layout(xaxis_tickangle=-30,
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)"
+            )
+
+            st.plotly_chart(fig3, use_container_width=True)
+
+            if not daily.empty:
+                st.info("Track patient flow to optimize staffing")
 
         with col_d:
-            st.subheader("Revenue by Disease")
-            rev = df.groupby("Disease")["Fees"].sum().sort_values(ascending=False)
-            st.bar_chart(rev)
+            st.subheader("💰 Revenue by Disease")
+            rev = df.groupby("Disease")["Fees"].sum().sort_values(ascending=False).reset_index()
 
+            fig4 = px.bar(
+                rev,
+                x="Disease",
+                y="Fees",
+                color="Disease",
+                title="Revenue Contribution",
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+
+            fig4.update_layout(xaxis_tickangle=-30,
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)"
+            )   
+
+            st.plotly_chart(fig4, use_container_width=True)
+
+            if not rev.empty:
+                st.warning(f"Highest revenue from: {rev.iloc[0]['Disease']}")
+
+        # ==============================
+        # 🧠 BUSINESS INSIGHTS (MAIN SELLING POINT)
+        # ==============================
+        st.markdown("---")
+        st.subheader("📊 Smart Insights")
+
+        if not df.empty:
+            busy_doc = df["Doctor"].value_counts().idxmax()
+            avg_rev = int(df["Fees"].mean())
+
+            st.info(f"Dr. {busy_doc} is handling the most patients.")
+            st.info(f"Average revenue per patient: ₹{avg_rev}")
+
+            if pending_count > 5:
+                st.error("High pending payments — risk of revenue loss.")
+            else:
+                st.success("Payments are under control.")
+
+
+
+    
         # Payment status breakdown
         st.subheader("Payment Status Breakdown")
         pay_counts = df["Payment Status"].value_counts()
@@ -401,6 +748,9 @@ elif menu == "Dashboard":
         st.markdown("---")
 
         # Summary PDF Report
+        doc_perf = df["Doctor"].value_counts().reset_index()
+        doc_perf.columns = ["Doctor", "Patients"]
+
         st.subheader("Generate Summary Report")
         if st.button("Download Summary PDF"):
             pdf = FPDF()
@@ -418,8 +768,8 @@ elif menu == "Dashboard":
             pdf.set_font("Arial", "B", 12)
             pdf.cell(200, 8, txt="Doctor Patient Count:", ln=True)
             pdf.set_font("Arial", size=11)
-            for doc, count in doc_perf.items():
-                pdf.cell(200, 7, txt=f"  {doc}: {count} patients", ln=True)
+            for index, row in doc_perf.iterrows():
+                pdf.cell(200, 7, txt=f"{row['Doctor']}: {row['Patients']} patients", ln=True)
             file_path = "Hospital_Summary_Report.pdf"
             pdf.output(file_path)
             with open(file_path, "rb") as f:
@@ -621,15 +971,19 @@ elif menu == "OPD Queue":
         doctor = st.text_input("Doctor")
         if st.button("Add to Queue"):
             if name and doctor:
-                c.execute("INSERT INTO opd (token, name, doctor, status) VALUES (?, ?, ?, ?)",
-                          (token, name, doctor, "Waiting"))
+                c.execute("INSERT INTO opd (hospital_id, token, name, doctor, status) VALUES (?, ?, ?, ?, ?)",
+                          (st.session_state.hospital_id, token, name, doctor, "Waiting"))
                 conn.commit()
                 st.success(f"Token {token} issued to {name}.")
                 st.rerun()
             else:
                 st.warning("Please enter patient name and doctor.")
 
-    df_opd = pd.read_sql_query("SELECT * FROM opd", conn)
+    df_opd = pd.read_sql_query(
+        "SELECT * FROM opd WHERE hospital_id=?",
+        conn,
+        params=(st.session_state.hospital_id,)
+    )
 
     if not df_opd.empty:
         st.markdown("#### Queue")
@@ -690,6 +1044,7 @@ elif menu == "Smart Insights":
     st.subheader("Smart Hospital Insights")
 
     df = view_patients()
+    
 
     if df.empty:
         st.warning("No data available for analysis.")
@@ -763,6 +1118,26 @@ elif menu == "Smart Insights":
     st.info(f"Most busy doctor: Dr. {highest_doc}")
 
     avg_revenue = int(df["Fees"].mean())
-    st.info(f"Average revenue per patient: Rs.{avg_revenue}")        
+    st.info(f"Average revenue per patient: Rs.{avg_revenue}")   
+
+    st.markdown("---")
+    st.subheader("📊 Smart Business Insights")
+
+    # Busiest doctor
+    busy_doc = df["Doctor"].value_counts().idxmax()
+    st.info(f"Dr. {busy_doc} is handling the most patients.")
+
+    # Revenue per patient
+    avg_rev = int(df["Fees"].mean())
+    st.info(f"Average revenue per patient: ₹{avg_rev}")
+
+    # Risk signal
+    pending = len(df[df["Payment Status"] == "Pending"])
+
+    if pending > 5:
+        st.error("High pending payments — revenue leakage risk.")
+    else:
+        st.success("Payments are under control.")
+         
 
 
